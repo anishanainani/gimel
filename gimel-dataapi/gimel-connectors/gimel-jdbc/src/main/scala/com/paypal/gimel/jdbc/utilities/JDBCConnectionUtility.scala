@@ -22,6 +22,7 @@ package com.paypal.gimel.jdbc.utilities
 import java.sql.{Connection, DriverManager}
 import java.util.Properties
 
+import scala.collection.immutable.Map
 import scala.util.control.NonFatal
 
 import org.apache.spark.sql.SparkSession
@@ -184,8 +185,9 @@ class JDBCConnectionUtility(sparkSession: SparkSession, dataSetProps: Map[String
     connectionProperties.put("user", s"${userName}")
     connectionProperties.put("password", s"${password}")
 
+    val dsetProperties: Map[String, Any] = JdbcAuxiliaryUtilities.getDataSetProperties(dataSetProps)
     // set driver class
-    val driverClass = JdbcAuxiliaryUtilities.getJdbcStorageOptions(dataSetProps)("driver")
+    val driverClass = JdbcAuxiliaryUtilities.getJdbcStorageOptions(dsetProperties)("driver")
     connectionProperties.setProperty("Driver", driverClass)
 
     connectionProperties

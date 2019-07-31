@@ -55,11 +55,13 @@ class DataSet(sparkSession: SparkSession) extends GimelDataSet(sparkSession: Spa
       throw new DataSetOperationException("Props Cannot Be Empty!")
     }
     val dataSet = dataSetProps(GimelConstants.RESOLVED_HIVE_TABLE).toString
+    println("Inside read ->" + dataSetProps)
+
     try {
       jdbcUtilities.read(dataSet, dataSetProps)
     } catch {
       case e: Throwable =>
-        val msg = s"Error reading from TERADATA table: ${e.getMessage}"
+        val msg = s"Error reading from JDBC source: ${e.getMessage}"
         throw new DataSetOperationException(msg, e)
     }
   }
@@ -88,7 +90,7 @@ class DataSet(sparkSession: SparkSession) extends GimelDataSet(sparkSession: Spa
     } catch {
       case e: Throwable =>
         e.printStackTrace()
-        throw new DataSetOperationException(s"Error writing to TERADATA table", e)
+        throw new DataSetOperationException(s"Error writing to JDBC source", e)
     }
     dataFrame
   }

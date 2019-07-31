@@ -76,7 +76,8 @@ class JDBCUtilities(sparkSession: SparkSession) extends Serializable {
     var conn: Connection = jdbcConnectionUtility.getJdbcConnectionAndSetQueryBand()
 
     // get partitionColumn
-    val userPartitionColumn: Option[Any] = dataSetProps.get("partitionColumn")
+    // val userPartitionColumn: Option[Any] = dataSetProps.get("partitionColumn")
+    val userPartitionColumn: Option[Any] = Some("10")
     val partitionColumn = userPartitionColumn match {
 
       case None =>

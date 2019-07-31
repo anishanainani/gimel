@@ -140,7 +140,7 @@ class JDBCAuthUtilities(sparkSession: SparkSession) extends Serializable {
               val msg =
                 s"""Username or Password NOT FOUND!\n
                     | Check the password file: ${passwordFile} or configuration parameters provided in API
-                    | Please specify password in file as: jdbc_url/username,PASSWORD. e.g. -> simba.vip.paypal.com/username,PASSWORD
+                    | Please specify password in file as: jdbc_url/username,PASSWORD. e.g. -> localhost/username,PASSWORD
               """.stripMargin
               throw new JdbcAuthenticationException(msg)
             }

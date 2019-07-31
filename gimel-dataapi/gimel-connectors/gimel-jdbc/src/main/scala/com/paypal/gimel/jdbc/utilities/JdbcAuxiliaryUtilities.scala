@@ -604,6 +604,7 @@ object JdbcAuxiliaryUtilities {
     * @return
     */
   def getDataSetProperties(dataSetProps: Map[String, Any]): Map[String, Any] = {
+    println("Inside getDataSetProperties " + dataSetProps)
     val dsetProperties: Map[String, Any] = dataSetProps.contains(GimelConstants.DATASET_PROPS) match {
       case true =>
         // adding the properties map received from metadata to the outer map as well
@@ -675,6 +676,7 @@ object JdbcAuxiliaryUtilities {
     */
   def getJDBCOptions(dataSetProps: Map[String, Any]): Map[String, String] = {
     val dsetProperties: Map[String, Any] = getDataSetProperties(dataSetProps)
+    println("Inside getJDBCOptions ->" + dsetProperties)
 
     val jdbcOptions = getJdbcStorageOptions(dsetProperties)
 
@@ -691,6 +693,7 @@ object JdbcAuxiliaryUtilities {
   def getJdbcUrl(dataSetProps: Map[String, Any]): String = {
 
     val dsetProperties: Map[String, Any] = getDataSetProperties(dataSetProps)
+    println("Inside getJdbcUrl ->" + dsetProperties)
 
     // get basic url
     val url = dsetProperties(JdbcConfigs.jdbcUrl).toString
