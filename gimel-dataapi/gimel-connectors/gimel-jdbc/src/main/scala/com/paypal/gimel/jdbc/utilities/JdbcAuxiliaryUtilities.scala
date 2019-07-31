@@ -1,5 +1,5 @@
 /*
- * Copyright 2019 PayPal Inc.
+ * Copyright 2017 PayPal Inc.
  *
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements.  See the NOTICE file distributed with
@@ -28,7 +28,7 @@ import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.types.{StructField, StructType}
 
 import com.paypal.gimel.common.catalog.{DataSetProperties, Field}
-import com.paypal.gimel.common.conf.GimelConstants
+import com.paypal.gimel.common.conf.{CatalogProviderConfigs, CatalogProviderConstants, GimelConstants}
 import com.paypal.gimel.jdbc.conf.{JdbcConfigs, JdbcConstants}
 import com.paypal.gimel.logger.Logger
 
@@ -329,25 +329,25 @@ object JdbcAuxiliaryUtilities {
     * @param dbconn  JDBC data source connection
     * @return Boolean
     */
-  def truncateTable(url: String, dbTable: String, dbconn: Connection,
-                    logger: Option[Logger] = None): Boolean = {
+  def truncateTable(url: String, dbTable: String, dbconn: Connection): Boolean = {
+
     val jdbcSystem = getJDBCSystem(url)
     jdbcSystem match {
       case JdbcConstants.MYSQL =>
-        val truncateTableStatement = s"DELETE FROM $dbTable"
-        if (logger.isDefined) {
-          logger.get.info(s"In TRUNCATE: $truncateTableStatement")
-        }
-        executeQueryStatement(truncateTableStatement, dbconn)
+        val truncateTableStatement = s"DELETE FROM ${dbTable}"
+        val st: PreparedStatement = dbconn.prepareStatement(truncateTableStatement)
+        st.execute()
+
       case JdbcConstants.TERADATA =>
-        val truncateTableStatement = s"DELETE $dbTable ALL"
-        if (logger.isDefined) {
-          logger.get.info(s"In TRUNCATE: $truncateTableStatement")
-        }
-        executeQueryStatement(truncateTableStatement, dbconn)
+        val truncateTableStatement = s"DELETE ${dbTable} ALL"
+        val st: PreparedStatement = dbconn.prepareStatement(truncateTableStatement)
+        st.execute()
+
       case _ =>
         throw new Exception(s"This JDBC System is not supported. Please check gimel docs.")
     }
+
+
   }
 
   /**
@@ -444,7 +444,7 @@ object JdbcAuxiliaryUtilities {
     * @return Tuple of min and max value of that column
     */
   def getMinMax(column: String, dbTable: String, conn: Connection): (Double, Double) = {
-    val getMinMaxStatement = s"""SELECT MIN($column) as lowerBound, MAX($column) as upperBound FROM $dbTable"""
+    val getMinMaxStatement = s"""SELECT MIN(${column}) as lowerBound, MAX(${column}) as upperBound FROM ${dbTable}"""
     val columnStatement: PreparedStatement = conn.prepareStatement(getMinMaxStatement)
     try {
       val resultSet: ResultSet = columnStatement.executeQuery()
@@ -464,7 +464,7 @@ object JdbcAuxiliaryUtilities {
     }
     catch {
       case e: Exception =>
-        throw new IllegalStateException(s"Error while getting min & max value from $dbTable: ${e.getMessage}", e)
+        throw new Exception(s"Error getting min & max value from ${dbTable}: ${e.getMessage}", e)
     }
   }
 
@@ -473,25 +473,18 @@ object JdbcAuxiliaryUtilities {
     * @param dbtable
     * @param con
     */
-  def dropTable(dbtable: String, con: Connection, digestException: Boolean = true,
-                logger: Option[Logger] = None): Unit = {
+  def dropTable(dbtable: String, con: Connection): Unit = {
     val dropStatement =
       s"""
-         | DROP TABLE $dbtable
+         | DROP TABLE ${dbtable}
        """.stripMargin
-    if (logger.isDefined) {
-      logger.get.info(s"About to execute DROP -> $dropStatement")
-    }
     try {
-      executeQueryStatement(dropStatement, con)
+      val dropPmt = con.prepareStatement(dropStatement)
+      dropPmt.execute()
     }
     catch {
       case e: Exception =>
-        // if the table doesn't exist then ignoring the exception
-        new Logger(this.getClass.getName).error("Digesting drop table exception! ", e)
-        if (!digestException) {
-          throw e
-        }
+        e.printStackTrace()
     }
   }
 
@@ -503,17 +496,16 @@ object JdbcAuxiliaryUtilities {
     * @param numPartitions num of partitions
     * @return
     */
-  def insertPartitionsIntoTargetTable(dbTable: String, con: Connection, numPartitions: Int,
-                                      logger: Option[Logger] = None): Boolean = {
+  def insertPartitionsIntoTargetTable(dbTable: String, con: Connection, numPartitions: Int): Boolean = {
+
     val insertStatement =
       s"""
-         | INSERT INTO $dbTable
+         | INSERT INTO ${dbTable}
          | ${getUnionAllStatetementFromPartitions(dbTable, numPartitions)}
        """.stripMargin
-    if (logger.isDefined) {
-      logger.get.info(s"About to execute INSERT -> $insertStatement")
-    }
-    executeQueryStatement(insertStatement, con)
+
+    val insertUnion: PreparedStatement = con.prepareStatement(insertStatement)
+    insertUnion.execute()
   }
 
   /**
@@ -523,12 +515,14 @@ object JdbcAuxiliaryUtilities {
     * @return
     */
   def getUnionAllStatetementFromPartitions(dbTable: String, numPartitions: Int): String = {
+
     val selStmt =
       """
         | SELECT * FROM
       """.stripMargin
+
     (0 until numPartitions).map(partitionId =>
-      s"$selStmt ${dbTable}_${JdbcConstants.GIMEL_TEMP_PARTITION}_$partitionId"
+      s"${selStmt} ${dbTable}_${JdbcConstants.GIMEL_TEMP_PARTITION}_${partitionId}"
     ).mkString(" UNION ALL ")
   }
 
@@ -538,31 +532,12 @@ object JdbcAuxiliaryUtilities {
     * @param con
     * @param numPartitions
     */
-  def dropAllPartitionTables(dbtable: String, con: Connection, numPartitions: Int,
-                             logger: Option[Logger] = None): Unit = {
-    for (partitionId <- 0 until numPartitions) {
-      JdbcAuxiliaryUtilities.dropTable(s"${dbtable}_${JdbcConstants.GIMEL_TEMP_PARTITION}_$partitionId",
-        con, digestException = false)
-    }
+  def dropAllPartitionTables(dbtable: String, con: Connection, numPartitions: Int): Unit = {
+    (0 until numPartitions).map(partitionId =>
+      JdbcAuxiliaryUtilities.dropTable(s"${dbtable}_${JdbcConstants.GIMEL_TEMP_PARTITION}_${partitionId}", con)
+    )
   }
 
-  /**
-    *
-    * @param jdbcConnectionUtility
-    * @param jdbcHolder
-    * @return
-    */
-  def createConnectionWithPreConfigsSet(jdbcConnectionUtility: JDBCConnectionUtility,
-                                        jdbcHolder: JDBCArgsHolder,
-                                        connection: Option[Connection] = None): Connection = {
-    if (connection.isDefined && !connection.get.isClosed) {
-      connection.get
-    } else {
-      val dbc = jdbcConnectionUtility.getJdbcConnectionAndSetQueryBand()
-      JdbcAuxiliaryUtilities.executePreConfigs(jdbcHolder.jdbcURL, jdbcHolder.dbTable, dbc)
-      dbc
-    }
-  }
 
   /**
     *
@@ -570,16 +545,9 @@ object JdbcAuxiliaryUtilities {
     * @param con   jdbc connection
     * @return
     */
-  def executeQueryStatement(query: String, con: Connection, validateStatementExecution: Boolean = false): Boolean = {
-    val isStatementExecutionSuccess = JDBCConnectionUtility.withResources(con.prepareStatement(query)) { statement =>
-      val executeStatus: Boolean = statement.execute()
-      con.commit()
-      executeStatus
-    }
-    if (validateStatementExecution && !isStatementExecutionSuccess) {
-      throw new IllegalStateException(s"Failed to execute query : $query")
-    }
-    isStatementExecutionSuccess
+  def executeQuerySatement(query: String, con: Connection): Boolean = {
+    val queryStatement: PreparedStatement = con.prepareStatement(query)
+    queryStatement.execute()
   }
 
 
@@ -594,46 +562,37 @@ object JdbcAuxiliaryUtilities {
     val jdbcSystem = getJDBCSystem(url)
 
     // get the DDL for table for jdbc system
-    import JDBCConnectionUtility.withResources
     val ddl = jdbcSystem match {
       case JdbcConstants.TERADATA =>
-        val showTableQuery = s"SHOW TABLE $dbTable"
-        withResources(con.prepareStatement(showTableQuery)) {
-          preparedStatement =>
-            withResources(preparedStatement.executeQuery()) {
-              resultSet =>
-                val stringBuilder = new StringBuilder
-                while (resultSet.next()) {
-                  stringBuilder ++= resultSet.getString(1).replaceAll("[\u0000-\u001f]", " ").replaceAll(" +", " ")
-                }
-                stringBuilder.toString
-            }
+        val showTableQuery = s"SHOW TABLE ${dbTable}"
+        val showViewStatement: PreparedStatement = con.prepareStatement(showTableQuery)
+        val resultSet = showViewStatement.executeQuery()
+        var buf = new StringBuilder
+        while (resultSet.next()) {
+          buf ++= resultSet.getString(1).replaceAll("[\u0000-\u001f]", " ").replaceAll(" +", " ")
         }
+        buf.toString
       case JdbcConstants.MYSQL =>
-        val showTableQuery = s"SHOW CREATE TABLE $dbTable"
-        withResources(con.prepareStatement(showTableQuery)) {
-          preparedStatement =>
-            withResources(preparedStatement.executeQuery()) {
-              resultSet =>
-                val stringBuilder = new StringBuilder
-                while (resultSet.next()) {
-                  stringBuilder ++= resultSet.getString("Create Table")
-                    .replaceAll("[\u0000-\u001f]", " ").replaceAll(" +", " ")
-                }
-                val tempDdl = stringBuilder.toString
-                // if ddl does not contain the database name, replace table name with db.tablename
-                val ddlString = if (!tempDdl.contains(dbTable)) {
-                  val tableName = dbTable.split("\\.")(1)
-                  tempDdl.replace(tableName, dbTable)
-                }
-                else {
-                  tempDdl
-                }
-                ddlString
-            }
+        val showTableQuery = s"SHOW CREATE TABLE ${dbTable}"
+        val showViewStatement: PreparedStatement = con.prepareStatement(showTableQuery)
+        val resultSet = showViewStatement.executeQuery()
+        var buf = new StringBuilder
+        while (resultSet.next()) {
+          buf ++= resultSet.getString("Create Table").replaceAll("[\u0000-\u001f]", " ").replaceAll(" +", " ")
         }
+        val tempDdl = buf.toString
+
+        // if ddl does not contain the database name, replace table name with db.tablename
+        val ddlString = if (!tempDdl.contains(dbTable)) {
+          val tableName = dbTable.split("\\.")(1)
+          tempDdl.replace(tableName, dbTable)
+        }
+        else {
+          tempDdl
+        }
+        ddlString
       case _ =>
-        throw new Exception(s"The JDBC System for $url is not supported")
+        throw new Exception(s"The JDBC System for ${url} is not supported")
     }
     ddl
   }
@@ -667,7 +626,7 @@ object JdbcAuxiliaryUtilities {
     val url = getJdbcUrl(dsetProperties)
     // driver
     val driver = dsetProperties(JdbcConfigs.jdbcDriverClassKey).toString
-    val jdbcOptions: Map[String, String] = Map(JdbcConfigs.jdbcUrl -> url, JdbcConfigs.jdbcDriverClassKey -> driver)
+    val jdbcOptions: Map[String, String] = Map("url" -> url, "driver" -> driver)
     jdbcOptions
   }
 
@@ -683,7 +642,7 @@ object JdbcAuxiliaryUtilities {
     // driver
     val driver = dsetProperties(JdbcConfigs.jdbcDriverClassKey).toString
 
-    val jdbcOptions: Map[String, String] = Map(JdbcConfigs.jdbcUrl -> url, JdbcConfigs.jdbcDriverClassKey -> driver)
+    val jdbcOptions: Map[String, String] = Map("url" -> url, "driver" -> driver)
     jdbcOptions
   }
 
@@ -720,12 +679,8 @@ object JdbcAuxiliaryUtilities {
     val jdbcOptions = getJdbcStorageOptions(dsetProperties)
 
     // table
-    if (dsetProperties.contains(JdbcConfigs.jdbcInputTableNameKey)) {
-      val jdbcTableName = dsetProperties(JdbcConfigs.jdbcInputTableNameKey).toString
-      jdbcOptions + (JdbcConfigs.jdbcDbTable -> jdbcTableName)
-    } else {
-      jdbcOptions
-    }
+    val jdbcTableName = dsetProperties(JdbcConfigs.jdbcInputTableNameKey).toString
+    jdbcOptions + ("dbtable" -> jdbcTableName)
   }
 
   /**
@@ -753,10 +708,10 @@ object JdbcAuxiliaryUtilities {
         var newURL = url + "/" + "charset=" + charset
         // Teradata READ type
         newURL = if (teradataReadType.toUpperCase.equals("FASTEXPORT")) {
-          newURL + "," + "TYPE=FASTEXPORT" + "," + s"SESSIONS=$teradataSessions"
+          newURL + "," + "TYPE=FASTEXPORT" + "," + s"SESSIONS=${teradataSessions}"
         }
         else if (teradataWriteType.toUpperCase.equals("FASTLOAD")) {
-          newURL + "," + "TYPE=FASTLOAD" + "," + s"SESSIONS=$teradataSessions"
+          newURL + "," + "TYPE=FASTLOAD" + "," + s"SESSIONS=${teradataSessions}"
         }
         else {
           newURL
@@ -784,7 +739,10 @@ object JdbcAuxiliaryUtilities {
       case JdbcConstants.MYSQL =>
         // set the database to use for MYSQL
         val db = dbTable.split("\\.")(0)
-        executeQueryStatement(s"USE $db", con)
+        val useDataBaseStatement = s"USE ${db}"
+        val st = con.prepareStatement(useDataBaseStatement)
+        st.execute()
+
       case _ =>
       // do nothing
     }
@@ -840,10 +798,10 @@ object JdbcAuxiliaryUtilities {
     val jdbcSystem = getJDBCSystem(url)
     val partitionTable = jdbcSystem match {
       case JdbcConstants.MYSQL =>
-        s"${dbTable.split("\\.")(1)}_${JdbcConstants.GIMEL_TEMP_PARTITION}_$partitionId"
+        s"${dbTable.split("\\.")(1)}_${JdbcConstants.GIMEL_TEMP_PARTITION}_${partitionId}"
 
       case JdbcConstants.TERADATA =>
-        s"${dbTable}_${JdbcConstants.GIMEL_TEMP_PARTITION}_$partitionId"
+        s"${dbTable}_${JdbcConstants.GIMEL_TEMP_PARTITION}_${partitionId}"
 
       case _ =>
         throw new Exception(s"This JDBC System is not supported. Please check gimel docs.")

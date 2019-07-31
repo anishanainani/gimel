@@ -477,7 +477,7 @@ class DataSet(val sparkSession: SparkSession) {
     * Calls appropriate DataSet & its create method
     *
     * @param sourceType Example : KAFKA | ELASTIC_SEARCH | HDFS | HBASE  |JDBC
-    * @param sourceName Example : cdh.wuser.confdba | wuser | default:wuser
+    * @param sourceName Example : flights.flights_log | flights | default:flights
     * @param props      Additional Properties for the Reader of Dataset
     * @return DataFrame
     */

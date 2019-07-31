@@ -185,7 +185,7 @@ class JDBCConnectionUtility(sparkSession: SparkSession, dataSetProps: Map[String
     connectionProperties.put("password", s"${password}")
 
     // set driver class
-    val driverClass = JdbcAuxiliaryUtilities.getJdbcStorageOptions(dataSetProps)(JdbcConfigs.jdbcDriverClassKey)
+    val driverClass = JdbcAuxiliaryUtilities.getJdbcStorageOptions(dataSetProps)("driver")
     connectionProperties.setProperty("Driver", driverClass)
 
     connectionProperties

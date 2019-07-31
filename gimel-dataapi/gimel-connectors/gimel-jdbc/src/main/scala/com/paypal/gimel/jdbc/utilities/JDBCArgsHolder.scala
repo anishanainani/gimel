@@ -22,14 +22,4 @@ package com.paypal.gimel.jdbc.utilities
 /**
   * Supporting class to hold the JDBC parameters
   */
-case class JDBCArgsHolder(dataSetProps: Map[String, Any],
-                          dataFrameColumns: Array[String],
-                          jdbcURL: String,
-                          realUser: String,
-                          jdbcPasswordStrategy: String,
-                          dbTable: String,
-                          batchSize: Int,
-                          cols: Int,
-                          setColumns: List[String] = List(),
-                          whereColumns: List[String] = List())
-  extends Serializable
+case class JDBCArgsHolder(dataSetProps: Map[String, Any], dataFrameColumns: Array[String], jdbcURL: String, realUser: String, jdbcPasswordStrategy: String, dbTable: String, batchSize: Int, cols: Int, setColumns: List[String] = List(), whereColumns: List[String] = List()) extends Serializable

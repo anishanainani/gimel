@@ -25,7 +25,6 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable.Map
 
 import com.paypal.gimel.logger.conf.LoggerConstants
-import com.paypal.gimel.logging.impl.JSONSystemLogger
 
 /**
   * com.paypal.gimel.logger.Logger SingleTon
@@ -75,7 +74,7 @@ class Logger(config: Any) extends Serializable {
   private val _APP_reference = config.toString
   private val logModes = Map(4 -> "INFO", 3 -> "DEBUG", 2 -> "WARN", 1 -> "ERROR")
   @volatile private var logMode = 4
-  lazy val logger: JSONSystemLogger = JSONSystemLogger.getInstance(getClass)
+  // lazy val logger: JSONSystemLogger = JSONSystemLogger.getInstance(getClass)
   private var logAudit = false
   var consolePrintEnabled = false
 
@@ -133,7 +132,7 @@ class Logger(config: Any) extends Serializable {
         case _ =>
           if (!sendToKafka) s"[${_APP_reference}] : ${message.toString}" else message
       }
-      if (logMode >= 2) logger.debug(finalMessage.asInstanceOf[Object])
+      // if (logMode >= 2) logger.debug(finalMessage.asInstanceOf[Object])
       if (consolePrintEnabled) println(s"GIMEL-LOGGER | ${Calendar.getInstance().getTime} | ${message}")
     } catch {
       case ex: Throwable =>
@@ -155,7 +154,7 @@ class Logger(config: Any) extends Serializable {
         case _ =>
           if (!sendToKafka) s"[${_APP_reference}] : ${message.toString}" else message
       }
-      if (logMode >= 4) logger.info(finalMessage.asInstanceOf[Object])
+      // if (logMode >= 4) logger.info(finalMessage.asInstanceOf[Object])
       if (consolePrintEnabled) println(s"GIMEL-LOGGER | ${Calendar.getInstance().getTime} | ${message}")
     } catch {
       case ex: Throwable =>
@@ -177,7 +176,7 @@ class Logger(config: Any) extends Serializable {
         case _ =>
           if (!sendToKafka) s"[${_APP_reference}] : ${message.toString}" else message
       }
-      if (logMode >= 3) logger.warn(finalMessage.asInstanceOf[Object])
+      // if (logMode >= 3) logger.warn(finalMessage.asInstanceOf[Object])
       if (consolePrintEnabled) println(s"GIMEL-LOGGER | ${Calendar.getInstance().getTime} | ${message}")
     } catch {
       case ex: Throwable =>
@@ -198,7 +197,7 @@ class Logger(config: Any) extends Serializable {
         case _ =>
           s"[${_APP_reference}] : ${message.toString}"
       }
-      if (logMode >= 1) logger.error(finalMessage)
+//      if (logMode >= 1) logger.error(finalMessage)
       if (consolePrintEnabled) println(s"GIMEL-LOGGER | ${Calendar.getInstance().getTime} | ${message}")
     } catch {
       case ex: Throwable =>
@@ -264,7 +263,7 @@ class Logger(config: Any) extends Serializable {
     if (logAudit) {
       this.info("Auditing Information being posted to Gimel Audit Log...")
       this.info(accessAuditInfo)
-      logger.info(accessAuditInfo.asJava)
+//      logger.info(accessAuditInfo.asJava)
     }
     accessAuditInfo
   }
@@ -342,7 +341,7 @@ class Logger(config: Any) extends Serializable {
     if (logAudit) {
       this.info("Auditing Information being posted to Gimel Audit Log...")
       this.info(accessAuditInfo)
-      logger.info(accessAuditInfo.asJava)
+//      logger.info(accessAuditInfo.asJava)
     }
 
     this.logMethodAccess(yarnAppId

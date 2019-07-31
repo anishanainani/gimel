@@ -45,7 +45,6 @@ import com.paypal.gimel.jdbc.utilities._
 import com.paypal.gimel.jdbc.utilities.JdbcAuxiliaryUtilities.getJDBCSystem
 import com.paypal.gimel.kafka.conf.KafkaConfigs
 import com.paypal.gimel.logger.Logger
-import com.paypal.gimel.logging.GimelStreamingListener
 import com.paypal.gimel.sql.utils.SQLNonANSIJoinParser
 
 
@@ -280,37 +279,37 @@ object GimelQueryUtils {
     finalList.toArray
   }
 
-  /**
-    * Prints Stats for Streaming Batch Window
-    *
-    * @param time     Time Object - Spark Streaming
-    * @param listener GIMEL Streaming Listener
-    */
-  def printStats(time: Time, listener: GimelStreamingListener): Unit = {
-    val batchTimeMS = time.milliseconds.toString
-    val batchDate = new Date(batchTimeMS.toLong)
-    val df = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss")
-    val batchTime = df.format(batchDate)
-    logger.info(s"Current Batch ID --> $time | $batchTime | $batchDate")
-    logger.info(
-      s"""|-----------------------------------------------------------------------
-          |Batch ID -->
-          |-----------------------------------------------------------------------
-          |time               : $time
-          |batchTimeMS        : $batchTimeMS
-          |batchTime          : $batchTime
-          |-----------------------------------------------------------------------
-          |Listener Metrics -->
-          |-----------------------------------------------------------------------
-          |appProcessingDelay : ${listener.appProcessingDelay}
-          |appSchedulingDelay : ${listener.appSchedulingDelay}
-          |appTotalDelay      : ${listener.appTotalDelay}
-          |processingDelay    : ${listener.processingDelay}
-          |schedulingDelay    : ${listener.schedulingDelay}
-          |totalDelay         : ${listener.totalDelay}
-          |-----------------------------------------------------------------------
-          |""".stripMargin)
-  }
+//  /**
+//    * Prints Stats for Streaming Batch Window
+//    *
+//    * @param time     Time Object - Spark Streaming
+//    * @param listener GIMEL Streaming Listener
+//    */
+//  def printStats(time: Time, listener: GimelStreamingListener): Unit = {
+//    val batchTimeMS = time.milliseconds.toString
+//    val batchDate = new Date(batchTimeMS.toLong)
+//    val df = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss")
+//    val batchTime = df.format(batchDate)
+//    logger.info(s"Current Batch ID --> $time | $batchTime | $batchDate")
+//    logger.info(
+//      s"""|-----------------------------------------------------------------------
+//          |Batch ID -->
+//          |-----------------------------------------------------------------------
+//          |time               : $time
+//          |batchTimeMS        : $batchTimeMS
+//          |batchTime          : $batchTime
+//          |-----------------------------------------------------------------------
+//          |Listener Metrics -->
+//          |-----------------------------------------------------------------------
+//          |appProcessingDelay : ${listener.appProcessingDelay}
+//          |appSchedulingDelay : ${listener.appSchedulingDelay}
+//          |appTotalDelay      : ${listener.appTotalDelay}
+//          |processingDelay    : ${listener.processingDelay}
+//          |schedulingDelay    : ${listener.schedulingDelay}
+//          |totalDelay         : ${listener.totalDelay}
+//          |-----------------------------------------------------------------------
+//          |""".stripMargin)
+//  }
 
 
   /**
@@ -411,77 +410,55 @@ object GimelQueryUtils {
     val (cacheStatement, selectSQL) = splitCacheQuery(inputSQL)
 
     val dataSetProps = sparkSession.conf.getAll
-    val jdbcOptions: Map[String, String] = JdbcAuxiliaryUtilities.getJDBCOptions(dataSetProps)
 
     // get jdbc Password Strategy
-    val jdbcPasswordStrategy = dataSetProps.getOrElse(JdbcConfigs.jdbcPasswordStrategy,
-      JdbcConstants.jdbcDefaultPasswordStrategy).toString
+    val jdbcPasswordStrategy = dataSetProps.getOrElse(JdbcConfigs.jdbcPasswordStrategy, JdbcConstants.jdbcDefaultPasswordStrategy).toString
+    val jdbcUrl = sparkSession.conf.get(JdbcConfigs.jdbcUrl, "")
 
-    if (!jdbcOptions.contains(JdbcConfigs.jdbcUrl)) {
-      throw new IllegalArgumentException("No JDBC url found. Please verify the dataset name in query")
+    if (jdbcUrl.equals("")) {
+      throw new Exception("No JDBC url found. Please verify the dataset name in query")
     }
 
     val jdbcConnectionUtility: JDBCConnectionUtility = JDBCConnectionUtility(sparkSession, dataSetProps)
 
-    val pushDownSqlAsTempTable = s"( $selectSQL ) as pushDownTempTable"
-
-    import JDBCUtilities._
-
-    // get connection
-    val connection: Connection = getOrCreateConnection(jdbcConnectionUtility)
-    // get partitionColumns
-    val partitionOptions = if (dataSetProps.contains(JdbcConfigs.jdbcPartitionColumns)) {
-      jdbcOptions + (JdbcConfigs.jdbcPartitionColumns -> dataSetProps(JdbcConfigs.jdbcPartitionColumns).toString)
-    } else jdbcOptions
-    val partitionColumns: Seq[String] = PartitionUtils.getPartitionColumns(partitionOptions, connection)
-
-    // set number of partitions
-    val userSpecifiedPartitions = dataSetProps.get("numPartitions")
-    val numPartitions: Int = JdbcAuxiliaryUtilities.getNumPartitions(jdbcOptions(JdbcConfigs.jdbcUrl),
-      userSpecifiedPartitions, JdbcConstants.readOperation)
-
-    val fetchSize = dataSetProps.getOrElse("fetchSize", JdbcConstants.defaultReadFetchSize).toString.toInt
-
+    val pushDownSqlAsTempTable = s"( ${selectSQL} ) as pushDownTempTable"
     try {
-      val jdbcSystem = getJDBCSystem(jdbcOptions(JdbcConfigs.jdbcUrl))
+      val jdbcSystem = getJDBCSystem(jdbcUrl)
       val pushDownDf = jdbcSystem match {
-        case JdbcConstants.TERADATA =>
+        case JdbcConstants.TERADATA => {
+          // get connection
+          val dbConnection = new DbConnection(jdbcConnectionUtility)
+
           // setting default values for ExtendedJdbcRDD
 
           // set the local property to pass to executor tasks
-          // TODO: setting not so significant check its usage
           logger.info(s"Setting jdbcPushDownFlag to TRUE in TaskContext for JDBCRdd")
 
           sparkSession.sparkContext.setLocalProperty(JdbcConfigs.jdbcPushDownEnabled, "true")
-          logger.info(s"Final SQL for Query Push Down --> $selectSQL")
+          logger.info(s"Final SQL for Query Push Down --> ${selectSQL}")
 
-          import PartitionUtils._
-          // TODO: The number of partitions are set to 1. The pushdown query result will always be obtained
-          // TODO: through one executor. Further optimizations to be explored.
-          val jdbcRDD: ExtendedJdbcRDD[Array[Object]] = new ExtendedJdbcRDD(sparkSession.sparkContext,
-            new DbConnection(jdbcConnectionUtility), selectSQL, fetchSize,
-            PartitionInfoWrapper(jdbcSystem, partitionColumns, JdbcConstants.defaultLowerBound,
-              JdbcConstants.defaultUpperBound, numOfPartitions = numPartitions))
+          // NOTE: The number of partitions are set to 1. The pushdown query result will always be obtained through one executor. Further optimizations to be explored.
+          val jdbcRDD: ExtendedJdbcRDD[Array[Object]] = new ExtendedJdbcRDD(sparkSession.sparkContext, dbConnection, selectSQL, JdbcConstants.defaultLowerBound, JdbcConstants.defaultUpperBound, 1, JdbcConstants.defaultReadFetchSize)
 
           // get connection
           val conn = jdbcConnectionUtility.getJdbcConnectionAndSetQueryBand()
 
           // getting table schema to build final dataframe
-          val tableSchema = JdbcReadUtility.resolveTable(jdbcOptions(JdbcConfigs.jdbcUrl), pushDownSqlAsTempTable, conn)
+          val tableSchema = JdbcReadUtility.resolveTable(jdbcUrl, pushDownSqlAsTempTable, conn)
           val rowRDD: RDD[Row] = jdbcRDD.map(v => Row(v: _*))
           sparkSession.createDataFrame(rowRDD, tableSchema)
-        case _ =>
-          logger.info(s"Final SQL for Query Push Down --> $pushDownSqlAsTempTable")
-          JdbcAuxiliaryUtilities.sparkJdbcRead(sparkSession, jdbcOptions(JdbcConfigs.jdbcUrl), pushDownSqlAsTempTable,
-            JdbcConstants.noPartitionColumn, JdbcConstants.defaultLowerBound, JdbcConstants.defaultUpperBound,
-            1, fetchSize, jdbcConnectionUtility.getConnectionProperties())
+        }
+        case _ => {
+          logger.info(s"Final SQL for Query Push Down --> ${pushDownSqlAsTempTable}")
+          JdbcAuxiliaryUtilities.sparkJdbcRead(sparkSession, jdbcUrl, pushDownSqlAsTempTable, JdbcConstants.noPartitionColumn, JdbcConstants.defaultLowerBound, JdbcConstants.defaultUpperBound, 1, JdbcConstants.defaultReadFetchSize, jdbcConnectionUtility.getConnectionProperties())
+        }
       }
 
       // cache query if inputSql contains cache query
       cacheStatement match {
         case Some(cacheTable) => {
           // cache the query results from pushdown
-          logger.info(s"Now caching the dataframe for ->  $selectSQL")
+          logger.info(s"Now caching the dataframe for ->  ${selectSQL}")
           cachePushDownQuery(cacheTable, pushDownDf, sparkSession)
         }
         case _ =>

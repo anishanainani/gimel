@@ -19,7 +19,7 @@
 
 package com.paypal.gimel.jdbc.utilities
 
-import java.sql.{Connection, DriverManager}
+import java.sql.{Connection, DriverManager, PreparedStatement}
 
 import org.apache.spark.sql.SparkSession
 
@@ -141,28 +141,31 @@ object JDBCCommons {
     * @param conn
     * @param actualUser
     */
-  def setQueryBand(conn: Connection, url: String, actualUser: String,
-                   jdbcPasswordStrategy: String = JdbcConstants.jdbcDefaultPasswordStrategy): Unit = {
+  def setQueryBand(conn: Connection, url: String, actualUser: String, jdbcPasswordStrategy: String = JdbcConstants.jdbcDefaultPasswordStrategy): Unit = {
 
     val jdbcSystem = getJDBCSystem(url)
 
     jdbcSystem match {
 
       case JdbcConstants.TERADATA =>
-        val queryBandStatement: String = s"""SET QUERY_BAND = 'PROXYUSER=$actualUser;' FOR SESSION;"""
+        val queryBandStatement: String = s"""SET QUERY_BAND = 'PROXYUSER=${actualUser};' FOR SESSION;"""
         jdbcPasswordStrategy match {
-          case "file" => // do nothing
-          case _ =>
-            logger.info(s"Setting QueryBand for $actualUser")
+          case "file" => {
+            // do nothing
+          }
+          case _ => {
+            logger.info(s"Setting QueryBand for ${actualUser}")
             try {
-              executeQueryStatement(queryBandStatement, conn)
+              val queryBandSt: PreparedStatement = conn.prepareStatement(queryBandStatement)
+              queryBandSt.execute()
             }
             catch {
-              case ex: Throwable =>
-                logger.error(s"Setting QueryBand failed for --> $actualUser")
+              case ex =>
+                logger.info(s"Setting QueryBand failed for --> ${actualUser}")
                 ex.printStackTrace()
                 throw ex
             }
+          }
         }
 
       case _ =>
@@ -191,8 +194,8 @@ object JDBCCommons {
     sparkSession.conf.set(JdbcConfigs.jdbcInsertStrategy, JdbcConstants.defaultInsertStrategy)
 
     // reset JDBC pushdownflag
-    //    logger.info(s"Resetting ${JdbcConfigs.jdbcPushDownEnabled} to False")
-    //    sparkSession.conf.set(JdbcConfigs.jdbcPushDownEnabled, "false")
+    logger.info(s"Resetting ${JdbcConfigs.jdbcPushDownEnabled} to False")
+    sparkSession.conf.set(JdbcConfigs.jdbcPushDownEnabled, "false")
 
     // unsetting the jdbc url from spark conf
     logger.info(s"Unsetting ${JdbcConfigs.jdbcUrl} from spark conf")

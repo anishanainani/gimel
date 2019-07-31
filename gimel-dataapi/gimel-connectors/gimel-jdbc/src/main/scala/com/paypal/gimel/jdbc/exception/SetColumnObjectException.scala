@@ -19,5 +19,4 @@
 
 package com.paypal.gimel.jdbc.exception
 
-class SetColumnObjectException(message: String, cause: Throwable) extends Exception(message, cause)
-
+class SetColumnObjectException(message: String) extends Exception(message)

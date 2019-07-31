@@ -36,7 +36,6 @@ import com.paypal.gimel.datastreamfactory.{StreamingResult, WrappedData}
 import com.paypal.gimel.jdbc.conf.JdbcConstants
 import com.paypal.gimel.kafka.conf.{KafkaConfigs, KafkaConstants}
 import com.paypal.gimel.logger.Logger
-import com.paypal.gimel.logging.GimelStreamingListener
 
 object GimelQueryProcessor {
 
@@ -343,8 +342,8 @@ object GimelQueryProcessor {
       val sqlContext = sparkSession.sqlContext
       val conf = new org.apache.spark.SparkConf()
       val ssc = new StreamingContext(sc, Seconds(batchInterval))
-      val listner: GimelStreamingListener = new GimelStreamingListener(sc.getConf)
-      ssc.addStreamingListener(listner)
+      // val listner: GimelStreamingListener = new GimelStreamingListener(sc.getConf)
+      // ssc.addStreamingListener(listner)
       logger.debug(
         s"""
            |isStreamParallel --> $isStreamParallel
@@ -371,7 +370,7 @@ object GimelQueryProcessor {
         if (isClearCheckPointEnabled) streamingResult.clearCheckPoint("Clearing CheckPoint As Requested By User")
         try {
           streamingResult.dStream.foreachRDD { (rdd, time) =>
-            printStats(time, listner)
+            // printStats(time, listner)
             val count = rdd.count()
             if (count > 0) {
               if (isStreamFailureBeyondThreshold) {
@@ -379,14 +378,14 @@ object GimelQueryProcessor {
                 else logger.info(s"Current Messages Per Second : ${count / batchInterval} within Supplied Stream Capacity ${streamFailureThresholdPerSecond}")
               }
               val failureThreshold = (batchInterval * streamFailureWindowFactor)
-              val totalDelay = (listner.totalDelay / 1000)
-              if (totalDelay > failureThreshold) {
-                throw new Exception(
-                  s"""Current Total_Delay:$totalDelay exceeded $failureThreshold <MultiplicationFactor:$streamFailureWindowFactor X StreamingWindow:$batchInterval>
-If mode=intelligent, then Restarting will result in Batch Mode Execution first for catchup, and automatically migrate to stream mode !
-                   """.stripMargin
-                )
-              } else logger.info(s"Current Total_Delay:$totalDelay within $failureThreshold <MultiplicationFactor:$streamFailureWindowFactor X StreamingWindow:$batchInterval>")
+              // val totalDelay = (listner.totalDelay / 1000)
+//              if (totalDelay > failureThreshold) {
+//                throw new Exception(
+//                  s"""Current Total_Delay:$totalDelay exceeded $failureThreshold <MultiplicationFactor:$streamFailureWindowFactor X StreamingWindow:$batchInterval>
+// If mode=intelligent, then Restarting will result in Batch Mode Execution first for catchup, and automatically migrate to stream mode !
+//                   """.stripMargin
+//                )
+//              } else logger.info(s"Current Total_Delay:$totalDelay within $failureThreshold <MultiplicationFactor:$streamFailureWindowFactor X StreamingWindow:$batchInterval>")
               streamingResult.getCurrentCheckPoint(rdd)
               streamingResult.getAsDF(sqlContext, rdd).registerTempTable(tmpKafkaTable)
               try {
@@ -631,8 +630,8 @@ If mode=intelligent, then Restarting will result in Batch Mode Execution first f
       val sqlContext = sparkSession.sqlContext
       val conf = new org.apache.spark.SparkConf()
       val ssc = new StreamingContext(sc, Seconds(batchInterval))
-      val listner: GimelStreamingListener = new GimelStreamingListener(conf)
-      ssc.addStreamingListener(listner)
+//      val listner: GimelStreamingListener = new GimelStreamingListener(conf)
+//      ssc.addStreamingListener(listner)
       ssc.sparkContext.getConf
         .set(KafkaConfigs.isBackPressureEnabledKey, isBackPressureEnabled)
         .set(KafkaConfigs.streamMaxRatePerPartitionKey, streamRate)
@@ -654,7 +653,7 @@ If mode=intelligent, then Restarting will result in Batch Mode Execution first f
           if (isClearCheckPointEnabled) streamingResult.clearCheckPoint("Clearing CheckPoint As Requested By User")
           streamingResult.dStream.foreachRDD {
             (rdd, time) =>
-              printStats(time, listner)
+              // printStats(time, listner)
               val k: RDD[WrappedData] = rdd
               val count = rdd.count()
               if (count > 0) {
