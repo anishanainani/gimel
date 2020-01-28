@@ -54,7 +54,11 @@ class HBasePut(sparkSession: SparkSession) {
       // Hbase configuration
       val conf = new HbaseClientConfiguration(dataSetProps)
       // Getting (Column family -> Array[Columns]) mapping
-      val columnFamilyToColumnMapping: Map[String, Array[String]] = hbaseUtilities.getColumnMappingForColumnFamily(conf.hbaseTableColumnMapping)
+      val columnFamilyToColumnMapping: Map[String, Array[String]] = hbaseUtilities.getColumnMappingForColumnFamily(conf.hbaseNameSpace,
+        conf.hbaseTableName,
+        conf.hbaseTableColumnMapping,
+        conf.maxSampleRecordsForSchema,
+        conf.maxColumnsForSchema)
       logger.info("Column mapping -> " + columnFamilyToColumnMapping)
       // Converting columnFamilyToColumnMapping to a map of (Column -> Column Family)
       val columnToColumnFamilyMapping = columnFamilyToColumnMapping.flatMap(cfCols => cfCols._2.map(col => (col, cfCols._1)))

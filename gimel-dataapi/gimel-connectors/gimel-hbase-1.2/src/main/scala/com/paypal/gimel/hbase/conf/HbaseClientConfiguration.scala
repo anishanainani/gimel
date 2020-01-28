@@ -51,11 +51,9 @@ class HbaseClientConfiguration(val props: Map[String, Any]) {
   val clusterName = com.paypal.gimel.common.utilities.DataSetUtils.getYarnClusterName()
   val hbaseNameSpaceAndTable = GenericUtils.getValueFailIfEmpty(tableProps, HbaseConfigs.hbaseTableKey,
     "HBase table name not found. Please set the property " + HbaseConfigs.hbaseTableKey)
-  val hbaseTableColumnMapping = GenericUtils.getValueFailIfEmpty(tableProps, HbaseConfigs.hbaseColumnMappingKey,
-    s"""
-       | HBase column family to columns mapping not found. Please set the property ${HbaseConfigs.hbaseColumnMappingKey}.
-       | Example: cf1:col1,cf1:col2,cf2:col3
-       |""".stripMargin)
+  val hbaseTableColumnMapping = tableProps.getOrElse(HbaseConfigs.hbaseColumnMappingKey, "")
+  val maxSampleRecordsForSchema = GenericUtils.getValue(tableProps, HbaseConfigs.hbaseMaxRecordsForSchema, HbaseConstants.MAX_SAMPLE_RECORDS_FOR_SCHEMA).toInt
+  val maxColumnsForSchema = GenericUtils.getValue(tableProps, HbaseConfigs.hbaseMaxColumnsForSchema, HbaseConstants.MAX_COLUMNS_FOR_SCHEMA).toInt
   // If this property consists of namespace and tablename both separated by colon ":", take the table name by splitting this string
   val hbaseTableNamespaceSplit = hbaseNameSpaceAndTable.split(":")
   val hbaseTableName = if (hbaseTableNamespaceSplit.length > 1) {

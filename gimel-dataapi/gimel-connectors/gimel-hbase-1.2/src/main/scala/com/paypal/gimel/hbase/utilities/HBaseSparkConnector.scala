@@ -56,7 +56,11 @@ class HBaseSparkConnector(sparkSession: SparkSession) {
 
       val conf = new HbaseClientConfiguration(dataSetProps)
       // Setting the map (Column family -> Array of columns)
-      val columnFamilyToColumnMapping: Map[String, Array[String]] = hbaseUtilities.getColumnMappingForColumnFamily(conf.hbaseTableColumnMapping)
+      val columnFamilyToColumnMapping: Map[String, Array[String]] = hbaseUtilities.getColumnMappingForColumnFamily(conf.hbaseNameSpace,
+        conf.hbaseTableName,
+        conf.hbaseTableColumnMapping,
+        conf.maxSampleRecordsForSchema,
+        conf.maxColumnsForSchema)
       logger.info("Column mapping -> " + columnFamilyToColumnMapping)
       // Get the hbase-site.xml file location
       val hbaseConfigFileLocation = HBaseAdminClient.getHbaseSiteXml(conf.hbaseSiteXMLHDFSPath)
@@ -151,7 +155,11 @@ class HBaseSparkConnector(sparkSession: SparkSession) {
       val dfColumns = dataFrame.columns.filter(x => !conf.hbaseRowKeys.contains(x)).toSeq
       logger.info("Columns in dataframe -> " + dfColumns)
       // Setting (Column family -> array of columns) mapping
-      val columnFamilyToColumnMapping: Map[String, Array[String]] = hbaseUtilities.getColumnMappingForColumnFamily(conf.hbaseTableColumnMapping)
+      val columnFamilyToColumnMapping: Map[String, Array[String]] = hbaseUtilities.getColumnMappingForColumnFamily(conf.hbaseNameSpace,
+        conf.hbaseTableName,
+        conf.hbaseTableColumnMapping,
+        conf.maxSampleRecordsForSchema,
+        conf.maxColumnsForSchema)
       logger.info("Column mapping -> " + columnFamilyToColumnMapping)
       val columnsInSchema = columnFamilyToColumnMapping.map(_._2).flatten.toSeq
       logger.info("Columns in schema : " + columnsInSchema)

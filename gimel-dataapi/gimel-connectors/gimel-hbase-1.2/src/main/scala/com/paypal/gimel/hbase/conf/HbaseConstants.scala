@@ -29,4 +29,7 @@ object HbaseConstants {
   val putOperation = "put"
 
   val NONE_STRING = "NONE"
+
+  val MAX_SAMPLE_RECORDS_FOR_SCHEMA = "1000"
+  val MAX_COLUMNS_FOR_SCHEMA = "100000"
 }
