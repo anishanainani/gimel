@@ -83,6 +83,10 @@ object KafkaBatchProducer {
 
   /**
     * InTakes a DataFrame
+<<<<<<< HEAD
+=======
+    * Convert to Avro Record
+>>>>>>> [#185] Add structured streaming API support for KAFKA
     * Serialize the record into Bytes
     * Publish to Kafka
     *

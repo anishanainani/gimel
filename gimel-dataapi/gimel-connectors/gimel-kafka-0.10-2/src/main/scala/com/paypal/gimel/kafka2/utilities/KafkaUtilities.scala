@@ -21,7 +21,13 @@ package com.paypal.gimel.kafka2.utilities
 
 import java.io.Closeable
 
+<<<<<<< HEAD
 import scala.collection.immutable.Map
+=======
+import scala.collection.JavaConverters._
+import scala.collection.immutable.Map
+import scala.collection.mutable
+>>>>>>> [#185] Add structured streaming API support for KAFKA
 import scala.language.implicitConversions
 import scala.reflect.runtime.universe._
 import scala.util.parsing.json.JSON
@@ -34,6 +40,12 @@ import org.apache.spark.streaming.kafka010._
 import spray.json._
 import spray.json.DefaultJsonProtocol._
 
+<<<<<<< HEAD
+=======
+import com.paypal.gimel.common.schema.ConfluentSchemaRegistry
+import com.paypal.gimel.common.storageadmin
+import com.paypal.gimel.common.storageadmin.KafkaAdminClient
+>>>>>>> [#185] Add structured streaming API support for KAFKA
 import com.paypal.gimel.datastreamfactory.StreamCheckPointHolder
 import com.paypal.gimel.kafka2.conf._
 import com.paypal.gimel.kafka2.conf.KafkaJsonProtocol.offsetPropertiesFormat
