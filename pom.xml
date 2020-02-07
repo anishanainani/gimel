@@ -32,6 +32,7 @@ under the License.
     <modules>
         <module>gimel-logging</module>
         <module>gimel-dataapi</module>
+        <module>gimel-serde</module>
     </modules>
 
     <repositories>
