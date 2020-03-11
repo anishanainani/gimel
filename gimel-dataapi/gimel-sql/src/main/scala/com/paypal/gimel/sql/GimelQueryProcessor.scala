@@ -31,15 +31,18 @@ import org.apache.spark.streaming.{Seconds, StreamingContext}
 import com.paypal.gimel._
 import com.paypal.gimel.common.catalog.{CatalogProvider, DataSetProperties}
 import com.paypal.gimel.common.conf.{CatalogProviderConfigs, GimelConstants}
-import com.paypal.gimel.common.utilities.{DataSetType, DataSetUtils}
+import com.paypal.gimel.common.security.AuthHandler
+import com.paypal.gimel.common.utilities.{DataSetUtils, DataSetType}
 import com.paypal.gimel.common.utilities.Timer
 import com.paypal.gimel.datasetfactory.GimelDataSet
 import com.paypal.gimel.datastreamfactory.{StreamingResult, StructuredStreamingResult, WrappedData}
-import com.paypal.gimel.jdbc.conf.JdbcConfigs
+import com.paypal.gimel.jdbc.conf.{JdbcConfigs, JdbcConstants}
+import com.paypal.gimel.jdbc.utilities.JDBCConnectionUtility
 import com.paypal.gimel.kafka.conf.{KafkaConfigs, KafkaConstants}
 import com.paypal.gimel.logger.Logger
 import com.paypal.gimel.logging.GimelStreamingListener
 import com.paypal.gimel.parser.utilities.{QueryConstants, QueryParserUtils}
+import com.paypal.gimel.scaas.livy.LivyGimelWrapper
 
 object GimelQueryProcessor {
 
@@ -51,6 +54,7 @@ object GimelQueryProcessor {
 
   val originalUser = sys.env("USER")
   var user = originalUser
+  var isQueryFromGTS = false
   val yarnCluster = com.paypal.gimel.common.utilities.DataSetUtils.getYarnClusterName()
 
   /**
@@ -68,6 +72,32 @@ object GimelQueryProcessor {
     logger.info(s"Catalog Provider --> [${catalogProvider}] | Catalog Provider Name --> [${catalogProviderName}] ")
     setCatalogProvider(catalogProvider)
     setCatalogProviderName(catalogProviderName)
+  }
+
+  /**
+    * Sets Spark GTS User Name if available
+    *
+    * @param sparkSession SparkSession
+    */
+  def setGtsUser(sparkSession: SparkSession): Unit = {
+    def MethodName: String = new Exception().getStackTrace.apply(1).getMethodName
+
+    logger.info(" @Begin --> " + MethodName)
+
+    val gtsUser: String = sparkSession.sparkContext.getLocalProperty(GimelConstants.GTS_USER_CONFIG)
+    if (gtsUser != null && originalUser.equalsIgnoreCase("livy")) {
+      logger.info(s"GTS User [${gtsUser}] will be used to over ride executing user [${originalUser}] who started GTS.")
+      sparkSession.sql(s"set ${GimelConstants.GTS_USER_CONFIG}=${gtsUser}")
+
+      // set jdbc username,if already not set in sparkconf
+      val jdbcUser: Option[String] = sparkSession.conf.getOption(JdbcConfigs.jdbcUserName)
+      if (jdbcUser.isEmpty) {
+        logger.info(s"Setting ${JdbcConfigs.jdbcUserName}=${gtsUser}")
+        sparkSession.sql(s"set ${JdbcConfigs.jdbcUserName}=${gtsUser}")
+      }
+      user = gtsUser
+      isQueryFromGTS = true
+    }
   }
 
   /**
@@ -108,6 +138,20 @@ object GimelQueryProcessor {
   }
 
   /**
+    * This function sets default values for gimel properties if not supplied by the user
+    *
+    * @param sparkSession - spark session
+    */
+  def setSparkSessionConfForGTS(sparkSession: SparkSession): Unit = {
+
+    if (AuthHandler.isAuthRequired(sparkSession)) {
+      logger.info("Setting default properties for Gimel Thrift Server if not supplied by user")
+      sparkSession.conf.set(KafkaConfigs.kafkaConsumerClearCheckpointKey, sparkSession.conf.get(KafkaConfigs.kafkaConsumerClearCheckpointKey, "true"))
+      sparkSession.conf.set(KafkaConfigs.kafkaConsumerReadCheckpointKey, sparkSession.conf.get(KafkaConfigs.kafkaConsumerReadCheckpointKey, "false"))
+    }
+  }
+
+  /**
     * This method will process one statement from executebatch
     *
     * @param sql          SQL String supplied by client
@@ -127,6 +171,10 @@ object GimelQueryProcessor {
       // At Run Time - Set the Catalog Provider and The Name Space of the Catalog (like the Hive DB Name when catalog Provider = HIVE)
       setCatalogProviderInfo(sparkSession)
 
+      // If query comes from GTS - interpret the GTS user and set it
+      setGtsUser(sparkSession)
+
+      setSparkSessionConfForGTS(sparkSession)
       val options = queryUtils.getOptions(sparkSession)._2
 
       val gimelLoggingLevel: String = options.getOrElse(GimelConstants.LOG_LEVEL,
@@ -145,36 +193,54 @@ object GimelQueryProcessor {
       val isCheckPointEnabled = options(KafkaConfigs.kafkaConsumerReadCheckpointKey).toBoolean
       //      val isClearCheckPointEnabled = options(KafkaConfigs.kafkaConsumerClearCheckpointKey).toBoolean
 
+      val sessionID = sparkSession.sparkContext.getLocalProperty(GimelConstants.GTS_GIMEL_LIVY_SESSION_ID)
+
       logger.debug(s"Is CheckPointing Requested By User --> $isCheckPointEnabled")
       val dataSet: DataSet = DataSet(sparkSession)
 
+      // Query is via GTS
+      val isGTSImpersonated = AuthHandler.isAuthRequired(sparkSession)
+
+
+      // Query has Hive / HBASE related DML that requires authentication.
+      lazy val isDMLHiveOrHbase = queryUtils.isHiveHbaseDMLAndGTSUser(sql, options, sparkSession)
+      // Query is a DDL operation
+      lazy val isDDL = queryUtils.isDDL(sql, sparkSession)
       // Identify JDBC complete pushdown
       val (isJdbcCompletePushDownEnabled, transformedSql, jdbcOptions) =
         GimelQueryUtils.isJdbcCompletePushDownEnabled(sparkSession, sql)
-
       val data = if (isJdbcCompletePushDownEnabled) {
         GimelQueryUtils.createPushDownQueryDataframe(sparkSession, transformedSql.get, jdbcOptions.get)
+      } else if (isGTSImpersonated && (isDDL || isDMLHiveOrHbase)) {
+        queryUtils.authenticateAccess(sql, sparkSession, options)
+        logger.info("Route DDL & DML for [Hive | HBASE] to dedicated livy session")
+        val res = LivyGimelWrapper.execute(sql, user, sparkSession)
+        boolToDFWithErrorString(sparkSession, res._1, res._2)
       } else if (queryUtils.isUDCDataDefinition(sql)) {
         logger.info("This path is dynamic dataset creation path")
-        var resultingStr = ""
-        Try(
-          handleDDLs(sql, sparkSession, dataSet, options)
-        ) match {
-          case Success(result) =>
-            resultingStr = "Query Completed."
-          case Failure(e) =>
-            resultingStr = s"Query Failed in function : $MethodName. Error --> \n\n ${
-              e.toString
-            }"
-            logger.error(resultingStr)
-            throw e
-        }
-        stringToDF(sparkSession, resultingStr)
+        handleDDLs(sql, sparkSession, dataSet, options)
       } else {
+        // Allow thrift server to execute the Query for all other cases.
+        val isSelectFromHiveOrHBase = queryUtils.isSelectFromHiveHbaseAndGTSUser(sql, options, sparkSession)
+        if (isSelectFromHiveOrHBase) {
+          logger.info("Select query consists of Hive or HBase dataset, authenticating access through ranger.")
+          queryUtils.authenticateAccess(sql, sparkSession, options)
+        }
 
         // Set HBase Page Size for optimization if selecting from HBase with limit
         if (QueryParserUtils.isHavingLimit(sql)) {
           setLimitForHBase(sql, options, sparkSession)
+        }
+
+        // This is required to ensure we pass the confs to Livy session as well as the existing GTS threadpool.
+        // This edge case is required when a user is about to execute an impersonation related query next,
+        // and that is going to go to Livy session
+        if (isGTSImpersonated && queryUtils.isSetConf(sql, sparkSession)) {
+          val livyEndPoint = sparkSession.conf.get(GimelConstants.LIVY_SPARK_ENDPOINT_KEY)
+          if (LivyGimelWrapper.isSessionIdle(user, sessionID, livyEndPoint)) {
+            logger.info("Allow thrift server to execute the Query for all other cases.")
+            LivyGimelWrapper.execute(sql, user, sparkSession)
+          }
         }
 
         val (originalSQL, destination, selectSQL, kafkaDataSets, queryPushDownFlag) =
@@ -217,7 +283,7 @@ object GimelQueryProcessor {
         , toLogFriendlyString(s"${yarnCluster}/${user}/${sparkAppName}")
         , MethodName
         , sql
-        , scala.collection.mutable.Map("sql" -> sql, "originalUser" -> originalUser)
+        , scala.collection.mutable.Map("sql" -> sql, "isQueryFromGTS" -> isQueryFromGTS.toString, "originalUser" -> originalUser)
         , GimelConstants.SUCCESS
         , GimelConstants.EMPTY_STRING
         , GimelConstants.EMPTY_STRING
@@ -237,7 +303,7 @@ object GimelQueryProcessor {
           , toLogFriendlyString(s"${yarnCluster}/${user}/${sparkAppName}")
           , MethodName
           , sql
-          , scala.collection.mutable.Map("sql" -> sql, "originalUser" -> originalUser)
+          , scala.collection.mutable.Map("sql" -> sql, "isQueryFromGTS" -> isQueryFromGTS.toString, "originalUser" -> originalUser)
           , GimelConstants.FAILURE
           , e.toString + "\n" + e.getStackTraceString
           , GimelConstants.UNKNOWN_STRING

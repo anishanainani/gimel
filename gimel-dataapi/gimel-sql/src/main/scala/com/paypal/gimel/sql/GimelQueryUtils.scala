@@ -22,34 +22,40 @@ package com.paypal.gimel.sql
 import java.nio.charset.StandardCharsets
 import java.sql.SQLException
 import java.text.SimpleDateFormat
+import java.util
 import java.util.Date
 
+import scala.collection.JavaConversions._
 import scala.collection.immutable.Map
 import scala.collection.mutable
 import scala.util.{Failure, Success, Try}
 
 import com.google.common.hash.Hashing
 import org.apache.commons.lang3.ArrayUtils
+import org.apache.hadoop.hive.metastore.api.Table
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.{DataFrame, Row, SparkSession}
+import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.streaming.Time
 
 import com.paypal.gimel.common.catalog.{CatalogProvider, DataSetProperties}
 import com.paypal.gimel.common.conf.{GimelConstants, _}
-import com.paypal.gimel.common.utilities.{DataSetType, GenericUtils, RandomGenerator}
-import com.paypal.gimel.common.utilities.DataSetUtils._
+import com.paypal.gimel.common.utilities.{GenericUtils, RandomGenerator}
+import com.paypal.gimel.common.utilities.{DataSetType, DataSetUtils}
 import com.paypal.gimel.datasetfactory.GimelDataSet
 import com.paypal.gimel.elasticsearch.conf.ElasticSearchConfigs
 import com.paypal.gimel.hbase.conf.HbaseConfigs
+import com.paypal.gimel.hbase.utilities.HBaseUtilities
+import com.paypal.gimel.hdfs.conf.HdfsConfigs
 import com.paypal.gimel.hive.conf.HiveConfigs
+import com.paypal.gimel.hive.utilities.HiveUtils
 import com.paypal.gimel.jdbc.conf.{JdbcConfigs, JdbcConstants}
 import com.paypal.gimel.jdbc.utilities._
-import com.paypal.gimel.jdbc.utilities.JdbcAuxiliaryUtilities._
+import com.paypal.gimel.jdbc.utilities.JdbcAuxiliaryUtilities.getJDBCSystem
 import com.paypal.gimel.jdbc.utilities.PartitionUtils.ConnectionDetails
-import com.paypal.gimel.kafka.conf.KafkaConfigs
+import com.paypal.gimel.kafka.conf.{KafkaConfigs, KafkaConstants}
 import com.paypal.gimel.logger.Logger
 import com.paypal.gimel.logging.GimelStreamingListener
-import com.paypal.gimel.parser.utilities.{QueryParserUtils, SearchCriteria, SearchSchemaUtils, SQLNonANSIJoinParser}
+import com.paypal.gimel.parser.utilities.{QueryParserUtils, SQLNonANSIJoinParser, SearchCriteria, SearchSchemaUtils}
 
 object GimelQueryUtils {
 
@@ -399,7 +405,7 @@ object GimelQueryUtils {
       case "true" =>
         logger.info("PATH IS -> QUERY PUSH DOWN")
         pCatalogTablesToReplaceAsTmpTable.foreach { kv =>
-          val resolvedSourceTable = resolveDataSetName(kv._1)
+          val resolvedSourceTable = DataSetUtils.resolveDataSetName(kv._1)
           val dataSetProperties: DataSetProperties =
             CatalogProvider.getDataSetProperties(resolvedSourceTable, mergeAllConfs(sparkSession))
           val hiveTableParams = dataSetProperties.props
@@ -459,6 +465,147 @@ object GimelQueryUtils {
     def MethodName: String = new Exception().getStackTrace.apply(1).getMethodName
     logger.info(" @Begin --> " + MethodName)
     QueryParserUtils.isHavingInsert(sql)
+  }
+
+  /**
+    * This function tokenize the incoming sql and parses it using JSQL parser and identify whether the query is of Insert type
+    * If it is a insert query, it checks whether it is of HIVE insert, which the caller will use it decide whether to execute it through Livy.
+    *
+    * @param sql          - Incoming SQL
+    * @param options      - set of Options from the user
+    * @param sparkSession - spark session
+    * @return - It returns a boolean that tells whether it is hive insert from GTS
+    */
+  def isHiveHbaseDMLAndGTSUser(sql: String, options: Map[String, String], sparkSession: SparkSession): Boolean = {
+    def MethodName: String = new Exception().getStackTrace.apply(1).getMethodName
+    logger.info(" @Begin --> " + MethodName)
+
+    val nonEmptyStrTokenized = GimelQueryUtils.tokenizeSql(sql)
+    val isHive: Boolean = nonEmptyStrTokenized.head.toLowerCase match {
+      case "insert" => {
+        val insertTable = getTargetTables(sql)
+        DataSetUtils.getSystemType(insertTable.get, sparkSession, options) match {
+          case DataSetType.HIVE => {
+            if (sparkSession.sparkContext.sparkUser.equalsIgnoreCase(GimelConstants.GTS_DEFAULT_USER)) {
+              logger.info("Hive insert query and comes from GTS")
+              true
+            }
+            else {
+              false
+            }
+          }
+          case DataSetType.HBASE => {
+            if (sparkSession.sparkContext.sparkUser.equalsIgnoreCase(GimelConstants.GTS_DEFAULT_USER)) {
+              logger.info("hBase insert query and comes from GTS")
+              true
+            }
+            else {
+              false
+            }
+          }
+          case _ => false
+        }
+      }
+      case _ =>
+        false
+    }
+    isHive
+  }
+
+  /**
+    * This function tokenize the incoming sql and parses it using JSQL parser and identify whether the query is of Select type
+    * If it is a select query, it checks whether it is of HIVE or HBase, which the caller will use to decide whether to authenticate through ranger.
+    *
+    * @param sql          - Incoming SQL
+    * @param options      - set of Options from the user
+    * @param sparkSession - spark session
+    * @return - It returns a boolean that tells whether it is hive insert from GTS
+    */
+  def isSelectFromHiveHbaseAndGTSUser(sql: String, options: Map[String, String],
+                                      sparkSession: SparkSession): Boolean = {
+    def MethodName: String = new Exception().getStackTrace.apply(1).getMethodName
+
+    logger.info(" @Begin --> " + MethodName)
+    var isHiveHbase: Boolean = false
+    Try {
+      val nonEmptyStrTokenized = GimelQueryUtils.tokenizeSql(sql)
+      isHiveHbase = nonEmptyStrTokenized.head.toLowerCase match {
+        case "select" =>
+          val selectTables = getAllTableSources(sql)
+          if (selectTables.isEmpty) return false
+          selectTables.map(eachTable => DataSetUtils.getSystemType(eachTable, sparkSession, options) match {
+            case DataSetType.HIVE =>
+              if (sparkSession.sparkContext.sparkUser.equalsIgnoreCase(GimelConstants.GTS_DEFAULT_USER)) {
+                logger.info("Hive select query and comes from GTS")
+                true
+              } else {
+                false
+              }
+            case DataSetType.HBASE =>
+              if (sparkSession.sparkContext.sparkUser.equalsIgnoreCase(GimelConstants.GTS_DEFAULT_USER)) {
+                logger.info("hBase select query and comes from GTS")
+                true
+              } else {
+                false
+              }
+            case _ => false
+          }).reduce((x, y) => x | y)
+        case _ =>
+          false
+      }
+    } match {
+      case Success(_) =>
+        logger.info(s"Interpreted isSelectFromHiveHbaseAndGTSUser with $isHiveHbase")
+      case Failure(exception) =>
+        logger.error(s"Exeception occurred while interpretting " +
+          s"isSelectFromHiveHbaseAndGTSUser with ${exception.getMessage}")
+        if (exception.getMessage.toLowerCase().contains("table not found")) {
+          logger.info("Suppressing the table not found exception")
+        } else {
+          throw exception
+        }
+    }
+    isHiveHbase
+  }
+
+  /**
+    * This function tokenize the incoming sql and parses it using JSQL parser and identify whether the query is of Select type
+    * If it is a select query, it checks whether it is of HBase and has limit clause.
+    *
+    * @param sql          - Incoming SQL
+    * @param options      - set of Options from the user
+    * @param sparkSession - spark session
+    * @return
+    */
+  def setLimitForHBase(sql: String, options: Map[String, String],
+                       sparkSession: SparkSession): Unit = {
+    def MethodName: String = new Exception().getStackTrace.apply(1).getMethodName
+
+    logger.info(" @Begin --> " + MethodName)
+    Try {
+      val nonEmptyStrTokenized = GimelQueryUtils.tokenizeSql(sql)
+      nonEmptyStrTokenized.head.toLowerCase match {
+        case "select" =>
+          val selectTables = getAllTableSources(sql)
+          // Checks if there is more than 1 source tables
+          if (selectTables.isEmpty || selectTables.length > 1) return
+          selectTables.map(eachTable => DataSetUtils.getSystemType(eachTable, sparkSession, options) match {
+            case DataSetType.HBASE =>
+              logger.info("Sql contains limit clause, setting the HBase Page Size.")
+              val limit = Try(QueryParserUtils.getLimit(sql)).get
+              sparkSession.conf.set(GimelConstants.HBASE_PAGE_SIZE, limit)
+            case _ =>
+              return
+          })
+        case _ =>
+          return
+      }
+    } match {
+      case Success(_) =>
+      case Failure(exception) =>
+        logger.error(s"Exeception occurred while setting the limit for HBase -> ${exception.getMessage}")
+        throw exception
+    }
   }
 
   /**
@@ -639,7 +786,7 @@ object GimelQueryUtils {
       , CatalogProviderConfigs.CATALOG_PROVIDER -> CatalogProviderConstants.PRIMARY_CATALOG_PROVIDER
       , GimelConstants.SPARK_APP_ID -> sparkSession.conf.get(GimelConstants.SPARK_APP_ID)
       , GimelConstants.SPARK_APP_NAME -> sparkSession.conf.get(GimelConstants.SPARK_APP_NAME)
-      , GimelConstants.APP_TAG -> getAppTag(sparkSession.sparkContext)
+      , GimelConstants.APP_TAG -> DataSetUtils.getAppTag(sparkSession.sparkContext)
     )
     val resolvedOptions: Map[String, String] = optionsToCheck.map { kvPair =>
       (kvPair._1, hiveConf.getOrElse(kvPair._1, kvPair._2))
@@ -883,6 +1030,46 @@ object GimelQueryUtils {
   }
 
   /**
+    * This function parses the SQL and get all the source tables.
+    * It calls hiveutils.ranger authentication if it is a HIVE table (Either UDC or non UDC tables are covered)
+    *
+    * @param sql          - incoming sql
+    * @param sparkSession - spark session object
+    * @param options      - incoming user options
+    */
+
+  def authenticateAccess(sql: String, sparkSession: SparkSession, options: Map[String, String]): Unit = {
+
+    def MethodName: String = new Exception().getStackTrace.apply(1).getMethodName
+
+    logger.info(" @Begin --> " + MethodName)
+
+    val nonEmptyStrTokenized = GimelQueryUtils.tokenizeSql(sql)
+    val sqlToAuthenticate: Option[String] = nonEmptyStrTokenized.head.toLowerCase match {
+      case "select" =>
+        // Handling a Select clause...
+        val userSuppliedPushDownFlag = sparkSession.conf.get(JdbcConfigs.jdbcPushDownEnabled, "false").toBoolean
+        // If the pushDownFlag is true it is a pure Teradata query and do not do authentication.
+        // So don't return any SQL for authentication
+        if (!userSuppliedPushDownFlag) Some(sql) else None
+      case "cache" =>
+        logger.info("Handling Cache statement ...")
+        Some(getPlainSelectClause(sql))
+      case "insert" =>
+        logger.info("Handling Insert statement ...Do ranger checks for the select tables if they from hive or hbase")
+        Some(getPlainSelectClause(sql))
+      case _ => None
+    }
+
+    logger.info("The incoming SQL for authenticateRangerPolicies =>" + sql)
+    sqlToAuthenticate match {
+      case Some(sql) => authenticateRangerPolicies(sqlToAuthenticate.get, sparkSession, options)
+      case _ => logger.info("No SQL to Authenticate.")
+    }
+
+  }
+
+  /**
     * Checks whether a table is cached in spark Catalog
     *
     * @param tableName    - incoming table name
@@ -926,46 +1113,6 @@ object GimelQueryUtils {
     logger.info(" @Begin --> " + MethodName)
 
     GimelQueryUtils.tokenizeSql(sql).head.equalsIgnoreCase("cache")
-  }
-
-  /**
-    * This function tokenizes the incoming sql and parses it using GSQL parser and identify whether the query is of Select type
-    * If it is a select query, it checks whether it is of HBase and has limit clause.
-    *
-    * @param sql          - Incoming SQL
-    * @param options      - set of Options from the user
-    * @param sparkSession - spark session
-    * @return
-    */
-  def setLimitForHBase(sql: String, options: Map[String, String],
-                       sparkSession: SparkSession): Unit = {
-    def MethodName: String = new Exception().getStackTrace.apply(1).getMethodName
-
-    logger.info(" @Begin --> " + MethodName)
-    Try {
-      val nonEmptyStrTokenized = GimelQueryUtils.tokenizeSql(sql)
-      nonEmptyStrTokenized.head.toLowerCase match {
-        case "select" =>
-          val selectTables = getAllTableSources(sql)
-          // Checks if there is more than 1 source tables
-          if (selectTables.isEmpty || selectTables.length > 1) return
-          selectTables.map(eachTable => getSystemType(eachTable, sparkSession, options) match {
-            case DataSetType.HBASE =>
-              logger.info("Sql contains limit clause, setting the HBase Page Size.")
-              val limit = Try(QueryParserUtils.getLimit(sql)).get
-              sparkSession.conf.set(GimelConstants.HBASE_PAGE_SIZE, limit)
-            case _ =>
-              return
-          })
-        case _ =>
-          return
-      }
-    } match {
-      case Success(_) =>
-      case Failure(exception) =>
-        logger.error(s"Exeception occurred while setting the limit for HBase -> ${exception.getMessage}")
-        throw exception
-    }
   }
 
   /**
@@ -1218,8 +1365,7 @@ object GimelQueryUtils {
   def validateAllDatasetsAreFromSameJdbcSystem(datasets: Seq[String]): Boolean = {
     var areAllDatasetFromSameJdbcSystem: Boolean = false
     if (datasets.nonEmpty) {
-      import com.paypal.gimel.parser.utilities.QueryParserUtils._
-      val storageSystemName = Try(extractSystemFromDatasetName(datasets.head)).toOption
+      val storageSystemName = Try(QueryParserUtils.extractSystemFromDatasetName(datasets.head)).toOption
       if (storageSystemName.isDefined &&
         CatalogProvider.getStorageSystemProperties(
           storageSystemName.get
@@ -1228,7 +1374,7 @@ object GimelQueryUtils {
           dataset =>
             Try {
               val storageSystemProperties =
-                CatalogProvider.getStorageSystemProperties(extractSystemFromDatasetName(dataset))
+                CatalogProvider.getStorageSystemProperties(QueryParserUtils.extractSystemFromDatasetName(dataset))
               storageSystemProperties(GimelConstants.STORAGE_TYPE) == GimelConstants
                 .STORAGE_TYPE_JDBC && dataset.contains(storageSystemName.get)
             }.getOrElse(false)
@@ -1278,6 +1424,165 @@ object GimelQueryUtils {
   }
 
   /**
+    * This function parses the SQL and get all the source tables.
+    * It calls hiveutils.ranger authentication if it is a HIVE table (Either UDC or non UDC tables are covered)
+    *
+    * @param sql          - incoming sql
+    * @param sparkSession - spark session object
+    * @param options      - incoming user options
+    */
+  def authenticateRangerPolicies(sql: String, sparkSession: SparkSession, options: Map[String, String]): Unit = {
+
+    def MethodName: String = new Exception().getStackTrace.apply(1).getMethodName
+
+    logger.info(" @Begin --> " + MethodName)
+
+    val listTables: util.List[String] = getAllTableSources(sql)
+    val newList = listTables.toList.filter(dataSetName => {
+      logger.info("the current data set name is " + dataSetName)
+      if (dataSetName.contains(".")) {
+        true
+      } else {
+        !isSparkCachedTable(dataSetName, sparkSession)
+      }
+    })
+    newList.foreach(dataSet => {
+      logger.info(
+        "Data Sets to be checked for Ranger authentication are " + dataSet)
+      authLogicWrapper(dataSet, sparkSession, options)
+    }
+    )
+  }
+
+  /**
+    * core logic to check each data set to see whether if it is HIVE or HBASE, if so do impersonation based on the impersonation flag.
+    *
+    * @param dataSet      - data set name
+    * @param sparkSession - spark session
+    * @param options      - user options
+    */
+  def authLogicWrapper(dataSet: String, sparkSession: SparkSession, options: Map[String, String]): Unit = {
+    def MethodName: String = new Exception().getStackTrace.apply(1).getMethodName
+
+    logger.info("@Begin --> " + MethodName)
+
+    logger.info("Data set name is  --> " + dataSet)
+    val formattedProps: Map[String, Any] = DataSetUtils.getProps(options) ++
+      Map(CatalogProviderConfigs.CATALOG_PROVIDER ->
+        sparkSession.conf.get(CatalogProviderConfigs.CATALOG_PROVIDER,
+          CatalogProviderConstants.PRIMARY_CATALOG_PROVIDER))
+
+    // if storage type unknown we will default to HIVE PROVIDER
+    if (isStorageTypeUnknown(dataSet)) {
+      formattedProps ++ Map(CatalogProviderConfigs.CATALOG_PROVIDER -> CatalogProviderConstants.HIVE_PROVIDER)
+    }
+
+    val dataSetProperties: DataSetProperties = CatalogProvider.getDataSetProperties(dataSet, options)
+    logger.info("dataSetProperties  ==> " + dataSetProperties.toString())
+    val systemType = DataSetUtils.getSystemType(dataSetProperties)
+
+    val newProps: Map[String, Any] = DataSetUtils.getProps(options) ++ Map(
+      GimelConstants.DATASET_PROPS -> dataSetProperties
+      , GimelConstants.DATASET -> dataSet
+      , GimelConstants.RESOLVED_HIVE_TABLE -> DataSetUtils.resolveDataSetName(dataSet))
+
+    systemType match {
+      case DataSetType.HIVE =>
+        val hiveUtils = new HiveUtils
+
+        // If its cross cluster access, do not allow dynamic dataset access as it would mean the dataset is not present in UDC
+        // and it will try to read from hive directly which would fail.
+        // Also, if HDFS location is not present, it may be a view, so abort it.
+        if (hiveUtils.isCrossCluster(dataSetProperties)) {
+          val isDynamicDataset = dataSetProperties.props.getOrElse(CatalogProviderConstants.DYNAMIC_DATASET, "false").toBoolean
+          if (isDynamicDataset) {
+            throw new IllegalStateException(
+              s"""
+                 | Cross Cluster Access Detected. Cannot read dynamic dataset.
+                 | This means the dataset does not exist in UDC. Please visit http://go/udc to create it.
+                 | Solutions for common exceptions are documented here : http://go/gimel/exceptions"
+               """.stripMargin)
+          }
+
+          if (!dataSetProperties.props.contains(HdfsConfigs.hdfsDataLocationKey) ||
+            dataSetProperties.props.get(HdfsConfigs.hdfsDataLocationKey).get == GimelConstants.NOT_APPLICABLE) {
+            throw new IllegalArgumentException(
+              s"""
+                 | Cross Cluster Access Detected. Cannot find ${HdfsConfigs.hdfsDataLocationKey} property.
+                 | Please check if it is a view as Gimel currently does not support cross cluster view access.
+                 | Solutions for common exceptions are documented here : http://go/gimel/exceptions"
+               """.stripMargin)
+          }
+          hiveUtils.authenticateTableAndLocationPolicy(dataSet, options, sparkSession, GimelConstants.READ_OPERATION)
+        } else {
+          val hiveTableName = (dataSetProperties.props(GimelConstants.HIVE_DATABASE_NAME) + "." + dataSetProperties.props(GimelConstants.HIVE_TABLE_NAME))
+          val hiveTableObject = CatalogProvider.getHiveTable(hiveTableName)
+          val tableType = hiveTableObject.getTableType
+          if (tableType == "VIRTUAL_VIEW") {
+            logger.info("Seems we are querying a view.")
+            val viewSql = hiveTableObject.getViewExpandedText()
+            logger.info(s"View SQL --> \n${viewSql}")
+            println(s"View SQL --> \n${viewSql}")
+            val allTableSources = GimelQueryUtils.getAllTableSources(viewSql)
+            logger.info(s"List of tables to be authenticated --> \n${allTableSources.mkString("\n")}")
+            println(s"List of tables to be authenticated --> \n${allTableSources.mkString("\n")}")
+            allTableSources.foreach(x => authLogicWrapper(x.replaceAll("`", ""), sparkSession, options))
+          } else {
+            hiveUtils.authenticateTableAndLocationPolicy(dataSet, options, sparkSession, GimelConstants.READ_OPERATION)
+            authForStorageHandler(dataSet, dataSetProperties, sparkSession, newProps, hiveTableObject)
+          }
+        }
+      case DataSetType.HBASE =>
+        val hbaseUtilities = HBaseUtilities(sparkSession)
+        hbaseUtilities.authenticateThroughRangerPolicies(dataSet, GimelConstants.READ_OPERATION, newProps)
+      case _ =>
+        None
+    }
+  }
+
+  /**
+    * core logic to authenticate if dataset has storage handler
+    *
+    * @param dataSet      - data set name
+    * @param dataSetProperties - DataSetProperties
+    * @param sparkSession - spark session
+    * @param options      - user options
+    * @param hiveTableObject - Hive Table object
+    */
+  def authForStorageHandler(dataSet: String, dataSetProperties: DataSetProperties, sparkSession: SparkSession, options: Map[String, Any], hiveTableObject: Table): Unit = {
+    def MethodName: String = new Exception().getStackTrace.apply(1).getMethodName
+
+    logger.info("@Begin --> " + MethodName)
+    val storageHandler = dataSetProperties.props.getOrElse(GimelConstants.STORAGE_HANDLER, GimelConstants.NONE_STRING)
+    storageHandler match {
+      case HbaseConfigs.hbaseStorageHandler =>
+        logger.info("Storage Handler --> " + HbaseConfigs.hbaseStorageHandler)
+        val hbaseNamespaceTable = GenericUtils.getValueFailIfEmpty(hiveTableObject.getParameters().toMap, HbaseConfigs.hbaseTableNameStorageHandlerKey,
+          s"""
+             | Hbase table name not found. Please check the property ${HbaseConfigs.hbaseTableNameStorageHandlerKey}
+             |""".stripMargin)
+        val hbaseUtilities = HBaseUtilities(sparkSession)
+        val newProps = options ++ Map(HbaseConfigs.hbaseTableKey -> hbaseNamespaceTable)
+        hbaseUtilities.authenticateThroughRangerPolicies(dataSet, GimelConstants.READ_OPERATION, newProps)
+      case _ =>
+        None
+    }
+  }
+
+  /**
+    * Checks whether the dataSet is HIVE by scanning the pcatalog phrase and also expecting to have the db and table
+    * names to decide it is a HIVE table
+    *
+    * @param dataSet DataSet
+    * @return Boolean
+    */
+
+  def isStorageTypeUnknown
+  (dataSet: String): Boolean = {
+    dataSet.split('.').head.toLowerCase() != GimelConstants.PCATALOG_STRING && dataSet.split('.').length == 2
+  }
+
+  /**
     * Resolves the Query by replacing Tmp Tables in the Query String
     * For Each Tmp Table placed in the Query String - a DataSet.read is initiated
     * For each Tmp Table - if the dataset is a Kafka DataSet - then each KafkaDataSet object is accumulated
@@ -1314,6 +1619,7 @@ object GimelQueryUtils {
     */
   def existsPartitionedByClause(sql: String): Boolean = {
     def MethodName: String = new Exception().getStackTrace.apply(1).getMethodName
+
     logger.info(" @Begin --> " + MethodName)
     sql.toUpperCase().contains(GimelConstants.HIVE_DDL_PARTITIONED_BY_CLAUSE)
   }
@@ -1343,9 +1649,8 @@ object GimelQueryUtils {
         // As tables emptiness is checked on the validateAllDatasetsAreFromSameJdbcSystem, getting the tables.head
 
         val transformedSQL = QueryParserUtils.transformUdcSQLtoJdbcSQL(sql, tables)
-        import com.paypal.gimel.common.utilities.DataSetUtils._
         val systemName = QueryParserUtils.extractSystemFromDatasetName(tables.head)
-        resultTuple = (true, Some(transformedSQL), Some(getJdbcConnectionOptions(systemName, sparkSession.conf.getAll)))
+        resultTuple = (true, Some(transformedSQL), Some(DataSetUtils.getJdbcConnectionOptions(systemName, sparkSession.conf.getAll)))
       } else {
         logger.info("Not all the datasets are from the same JDBC system")
       }
